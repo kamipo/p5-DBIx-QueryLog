@@ -22,9 +22,8 @@ use constant _ORG_DB_SELECTROW_ARRAY    => \&DBI::db::selectrow_array;
 
 use constant _HAS_MYSQL        => eval { require DBD::mysql; 1  } ? 1 : 0;
 use constant _HAS_PG           => eval { require DBD::Pg; 1     } ? 1 : 0;
-use constant _HAS_SQLITE       => eval { require DBD::SQLite; 1 } ? 1 : 0;
 use constant _PP_MODE          => $INC{'DBI/PurePerl.pm'}         ? 1 : 0;
-use constant _SUPPORTS_EXPLAIN => (_HAS_MYSQL || _HAS_SQLITE) && eval { require Text::ASCIITable; 1 } ? 1 : 0;
+use constant _SUPPORTS_EXPLAIN => eval { require Text::ASCIITable; 1 } ? 1 : 0;
 
 our %SKIP_PKG_MAP = (
     'DBIx::QueryLog' => 1,
@@ -274,19 +273,51 @@ sub _explain {
     no warnings qw(redefine prototype);
     local *DBI::st::execute = _ORG_EXECUTE; # suppress duplicate logging
 
-    my $sth;
-    if ($dbh->{Driver}{Name} eq 'mysql' || $dbh->{Driver}{Name} eq 'Pg') {
-        my $sql = 'EXPLAIN ' . _bind($dbh, $ret, $params, $types);
-        $sth = $dbh->prepare($sql);
-        $sth->execute;
+    my $explain = $container->{explain} || $ENV{DBIX_QUERYLOG_EXPLAIN};
+    if ($dbh->{Driver}{Name} eq 'mysql') {
+        $explain =~ m{
+            \A
+            \s*
+            EXPLAIN
+            (?:
+                \s+
+                (?: EXTENDED | PARTITIONS )
+            )?
+            \s*
+            \z
+        }ixms or $explain = 'EXPLAIN';
+    } elsif ($dbh->{Driver}{Name} eq 'Pg') {
+        $explain =~ m{
+            \A
+            \s*
+            EXPLAIN
+            (?:
+                \s+
+                (?: ANALYZE )
+            )?
+            \s*
+            \z
+        }ixms or $explain = 'EXPLAIN';
     } elsif ($dbh->{Driver}{Name} eq 'SQLite') {
-        my $sql = 'EXPLAIN QUERY PLAN ' . _bind($dbh, $ret, $params, $types);
-        $sth = $dbh->prepare($sql);
-        $sth->execute;
+        $explain =~ m{
+            \A
+            \s*
+            EXPLAIN
+            (?:
+                \s+
+                (?: QUERY \s+ PLAN )
+            )?
+            \s*
+            \z
+        }ixms or $explain = 'EXPLAIN QUERY PLAN';
     } else {
         # not supported
         return;
     }
+
+    my $sql = join q{ }, $explain, _bind($dbh, $ret, $params, $types);
+    my $sth = $dbh->prepare($sql);
+    $sth->execute;
 
     return sub {
         my %args = @_;
